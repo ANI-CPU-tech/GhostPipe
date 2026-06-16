@@ -180,40 +180,4 @@ def search(
     results = s.query(query_text, n_results=n_results, source_url=source_url)
     return results
 
-if __name__ == "__main__":
-    import asyncio
-    import sys
-    from browser.navigator import Navigator
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-    async def _test_rag():
-        # Let's have GhostPipe read the Wikipedia page for 'Hackathon'
-        url = "https://en.wikipedia.org/wiki/Hackathon"
-        
-        print("🕵️‍♂️ Deploying Scout to read the page...")
-        # Using headless=True since we don't need to watch it read
-        async with Navigator(headless=True) as nav:
-            await nav.goto(url)
-            
-            print("\n🧠 Extracting, Chunking, and Embedding content...")
-            # This runs Trafilatura, the Chunker, and saves to ChromaDB
-            result = await run(nav.page, source_url=url)
-            
-            print("\n--- Ingest Result ---")
-            print(f"Success: {result.success}")
-            print(f"Clean Chars Extracted: {result.char_count}")
-            print(f"Chunks Stored in DB: {result.chunks_stored}")
-            
-            if result.success:
-                print("\n🔍 Testing Semantic Search...")
-                print("Question: 'What is the main purpose of a hackathon?'\n")
-                
-                # Query the database we just populated
-                answers = search("What is the main purpose of a hackathon?", n_results=2)
-                
-                for i, ans in enumerate(answers, 1):
-                    print(f"Result {i} (Relevance Score: {ans.score}):")
-                    # Print the first 250 characters of the matched chunk
-                    print(f" > {ans.text[:250]}...\n")
-
-    asyncio.run(_test_rag())
