@@ -336,35 +336,4 @@ async def handle_obstacles(
         error=f"Max rounds ({max_rounds}) reached without clearing obstacle",
     )
 
-if __name__ == "__main__":
-    import asyncio
-    import sys
-    from browser.navigator import Navigator
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-
-    async def _demo():
-        # Let's give it a slightly harder task: searching Wikipedia
-        url = "https://en.wikipedia.org/wiki/Main_Page"
-        goal = "Type 'Artificial Intelligence' into the search bar and press Enter to search."
-
-        # Headless=False so you can watch the ghost intern work!
-        async with Navigator(headless=False) as nav:
-            print(f"Opening {url}...")
-            await nav.goto(url)
-
-            print(f"Goal: {goal}")
-            # Call the new updated function
-            result = await handle_obstacles(nav.page, goal, max_rounds=2)
-
-            print(f"\n--- Result ---")
-            print(f"Goal Cleared: {result.cleared}")
-            print(f"Final URL: {result.final_url}")
-            print("Actions Taken:")
-            for a in result.actions_taken:
-                print(f"  - {a.action.upper()} | Selector: {a.selector} | Value: {a.value}")
-            
-            # Wait 4 seconds before closing so you can see the final page
-            await asyncio.sleep(4)
-
-    asyncio.run(_demo())
