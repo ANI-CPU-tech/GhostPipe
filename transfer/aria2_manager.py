@@ -333,32 +333,4 @@ class Aria2Manager:
 
         return DownloadResult(success=False, gid=gid, error="Download ended unexpectedly")
 
-if __name__ == "__main__":
-    import asyncio
-    import sys
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-    async def _test_aria():
-        print("🚀 Starting Aria2c Dump Truck...")
-        # Using the official Python CDN (globally cached, highly reliable 25MB file)
-        test_url = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
-        
-        async with Aria2Manager() as mgr:
-            print("Queueing download...")
-            gid = await mgr.add_download(
-                url=test_url, 
-                dest_dir="./downloads", 
-                filename="python_test.exe"
-            )
-            print(f"Download started! GID: {gid}")
-            
-            result = await mgr.wait_for_completion(gid)
-            
-            print("\n--- Final Result ---")
-            print(f"Success: {result.success}")
-            if result.success:
-                print(f"Saved to: {result.filepath}")
-            else:
-                print(f"Error Message: {result.error}")
-
-    asyncio.run(_test_aria())

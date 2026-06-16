@@ -300,34 +300,3 @@ async def run(
     finally:
         if own_manager:
             await mgr.stop()
-
-if __name__ == "__main__":
-    import asyncio
-    from browser.navigator import Navigator
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-
-    async def _test_pipeline():
-        # A simple site with a direct PDF download button
-        url = "https://freetestdata.com/document-files/pdf/"
-        goal = "Click the button to download the 100KB PDF test file."
-
-        print("🕵️‍♂️ Deploying Scout (Playwright)...")
-        async with Navigator(headless=False) as nav:
-            await nav.goto(url)
-            
-            print(f"\n🧠 Handing off to AI Binary Pipeline...")
-            print(f"Goal: {goal}")
-            
-            # The AI will map the DOM, click the button, intercept the request, and hand off to aria2c
-            result = await run(nav.page, goal=goal, dest_dir="./downloads")
-            
-            print("\n--- Pipeline Result ---")
-            print(f"Success: {result.success}")
-            if result.success:
-                print(f"File downloaded to: {result.filepath}")
-            else:
-                print(f"Error: {result.error}")
-            
-            await asyncio.sleep(2)
-
-    asyncio.run(_test_pipeline())
