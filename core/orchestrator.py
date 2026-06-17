@@ -288,30 +288,4 @@ def run_sync(
         headless=headless,
     ))
 
-if __name__ == "__main__":
-    import logging
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    print("🚀 Running FULL GhostPipe End-to-End Test!")
-    
-    # We are passing a raw English command. The Orchestrator has to figure out 
-    # what to do, which website to visit, and which pipeline to trigger!
-    prompt = "Download the 100KB test PDF from https://freetestdata.com/document-files/pdf/"
-    
-    # run_sync is the magic function our CLI will eventually use
-    result = run_sync(prompt, headless=False)
-
-    print("\n" + "="*40)
-    print("🎉 END-TO-END RESULT 🎉")
-    print("="*40)
-    print(f"Success:  {result.success}")
-    print(f"Pipeline: {result.pipeline.upper()}")
-    
-    if result.pipeline == "binary" and result.download:
-        print(f"Saved to: {result.filepath}")
-    elif result.pipeline == "text" and result.ingest:
-        print(f"Chunks Stored: {result.chunks_stored}")
-        
-    if result.error:
-        print(f"Error: {result.error}")
-    print("="*40)
