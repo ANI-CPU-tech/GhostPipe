@@ -20,6 +20,8 @@ Options:
 import sys
 import logging
 import argparse
+import os
+from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -100,6 +102,49 @@ def _run_search(query: str, require_results: bool = False) -> None:
     console.print()
 
 # --------------------------------------------------------------------------- #
+# File Explorer Helper
+# --------------------------------------------------------------------------- #
+
+def _list_downloads(dest_dir: Path | None) -> None:
+    """Helper to scan the downloads folder and print a beautiful table."""
+    import config
+    target_dir = dest_dir or config.DOWNLOAD_DIR
+    
+    if not target_dir.exists():
+        console.print(f"\n[yellow]No downloads directory found at {target_dir}.[/]\n")
+        return
+
+    files = [f for f in target_dir.iterdir() if f.is_file()]
+    if not files:
+        console.print("\n[yellow]Your GhostPipe downloads folder is currently empty.[/]\n")
+        return
+
+    console.print(f"\n[bold cyan]Local File System[/] [dim]({target_dir})[/]")
+    t = Table(box=box.ROUNDED, show_lines=True, padding=(0, 1))
+    t.add_column("File Name", style="white", overflow="fold", max_width=45)
+    t.add_column("Size", style="cyan", justify="right")
+    t.add_column("Type", style="magenta")
+    t.add_column("Last Modified", style="dim")
+
+    # Sort files by newest first
+    files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+
+    for f in files:
+        # Calculate size in MB
+        size_mb = f.stat().st_size / 1_000_000
+        
+        # Format the date
+        mtime = datetime.fromtimestamp(f.stat().st_mtime)
+        date_str = mtime.strftime("%Y-%m-%d %H:%M")
+        
+        # Make the extension look clean
+        ext = f.suffix.replace('.', '').upper() if f.suffix else 'FILE'
+
+        t.add_row(f.name, f"{size_mb:.2f} MB", ext, date_str)
+
+    console.print(t)
+    console.print()
+# --------------------------------------------------------------------------- #
 # Interactive REPL Mode
 # --------------------------------------------------------------------------- #
 
@@ -118,7 +163,8 @@ def interactive_mode(credentials: dict | None, dest_dir: Path | None, headless: 
         "1. Type natural language requests to start an ingestion or download task.\n"
         "2. Paste direct URLs for maximum speed and accuracy.\n"
         "3. Use [bold magenta]/search <query>[/] to explore your local RAG memory.\n"
-        "4. [bold magenta]/q[/] or [bold magenta]/help[/] for more information.[/]\n"
+        "4. Use [bold magenta]/downloads[/] to view your local file system.\n"
+        "5. [bold magenta]/q[/] or [bold magenta]/help[/] for more information.[/]\n"
     )
     console.print(tips)
 
@@ -151,6 +197,10 @@ def interactive_mode(credentials: dict | None, dest_dir: Path | None, headless: 
                 console.print("\n[yellow]Usage: /search <your question>[/]\n")
             else:
                 _run_search(query)
+            continue
+
+        if lowered in ("/d", "/downloads", "downloads", "ls"):
+            _list_downloads(dest_dir)
             continue
 
         # If it's not a command, treat it as a pipeline request!
