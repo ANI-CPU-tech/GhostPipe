@@ -243,19 +243,27 @@ async def run(
                 error=dl_result.error,
             )
 
-        # --- 6b. Media Pipeline --------------------------------------
+        # --- 6b. Media Pipeline -----------
         elif pipeline == Pipeline.MEDIA:
             try:
-                # yt-dlp is so powerful it just needs the original URL!
-                # Passing start_url instead of nav.current_url avoids cookie-wall redirects
+                # Decide what to pass to yt-dlp
+                url_match = re.search(r'(https?://[^\s]+)', user_request)
+                if url_match:
+                    # User provided an exact link, use it
+                    download_target = url_match.group(1)
+                else:
+                    # Generic prompt! Pass the AI's search hint to yt-dlp's search engine
+                    download_target = intent.get("search_hint") or intent.get("description")
+
                 media_res = await media_pipeline.run(
-                    url=start_url, 
+                    url=download_target, 
                     dest_dir=dest_dir
                 )
             except Exception as e:
                 logger.exception("Media pipeline error: %s", e)
                 media_res = MediaResult(success=False, error=str(e))
-
+                
+            # THIS IS THE RETURN STATEMENT I FORGOT!
             return GhostPipeResult(
                 success=media_res.success,
                 pipeline=pipeline.value,

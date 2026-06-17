@@ -25,8 +25,12 @@ class MediaResult:
 def _download_sync(url: str, dest_dir: Path) -> MediaResult:
     """Synchronous yt-dlp call (runs in a background thread)."""
     
+    # NEW: If it's not a direct web link, tell yt-dlp to search YouTube for the top 1 result!
+    if not url.startswith("http"):
+        logger.info("No direct URL provided. Using yt-dlp search for: '%s'", url)
+        url = f"ytsearch1:{url}"
+        
     ydl_opts = {
-        # Download best mp4 video and best m4a audio and merge them
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': str(dest_dir / '%(title)s.%(ext)s'),
         'quiet': False,
@@ -38,11 +42,15 @@ def _download_sync(url: str, dest_dir: Path) -> MediaResult:
             logger.info("Extracting media info for: %s", url)
             info = ydl.extract_info(url, download=True)
             
+            # If it was a search, yt-dlp returns a playlist object containing the 1 video
+            if 'entries' in info:
+                info = info['entries'][0]
+                
             title = info.get('title', 'Unknown Media')
             filepath = ydl.prepare_filename(info)
             
             logger.info("Media download complete: %s", title)
-            return MediaResult(success=True, filepath=filepath, title=title)
+            return MediaResult(success=True, filepath=filepath, title=title, error=None)
             
     except Exception as e:
         logger.error("yt-dlp failed: %s", e)
