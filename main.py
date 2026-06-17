@@ -2,20 +2,19 @@
 GhostPipe — CLI Entry Point
 
 Usage examples:
-    python main.py "Get the Q3 earnings PDF from Apple's investor portal"
+    python main.py  (Starts Interactive REPL Mode)
     python main.py "Download the 114GB game installer from example-games.com"
     python main.py --visible "Scrape the NeurIPS 2024 schedule"
-    python main.py --user me@email.com --password secret "Download from members.site.com"
     python main.py --search "What was Q3 revenue?" --query-only
 
 Options:
-    request         Natural-language ingestion/download request (required unless --query-only)
+    request         Natural-language request. If omitted, starts Interactive Mode!
     --visible       Run browser headed (non-headless) — useful for debugging
     --user TEXT     Login username passed to obstacle handler
     --password TEXT Login password passed to obstacle handler
-    --dest PATH     Where to save downloaded files (binary pipeline, default: data/downloads)
+    --dest PATH     Where to save downloaded files
     --search TEXT   Semantic search query to run against stored ChromaDB
-    --query-only    Skip ingestion entirely; just run --search against existing ChromaDB
+    --query-only    Skip ingestion entirely; just run --search
     --log-level     DEBUG | INFO | WARNING | ERROR (default: WARNING)
 """
 
@@ -26,10 +25,11 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
+from rich.panel import Panel
+from rich.prompt import Prompt
 from rich import box
 
 console = Console()
-
 
 # --------------------------------------------------------------------------- #
 # Argument parser
@@ -42,47 +42,15 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument(
-        "request",
-        nargs="?",
-        default=None,
-        metavar="REQUEST",
-        help='Natural-language ingestion request (quote it)',
-    )
-    p.add_argument(
-        "--visible",
-        action="store_true",
-        help="Run browser in headed mode",
-    )
-    p.add_argument("--user",     default=None, metavar="EMAIL",    help="Login username")
+    p.add_argument("request", nargs="?", default=None, metavar="REQUEST", help='Natural-language request (omit to start interactive mode)')
+    p.add_argument("--visible", action="store_true", help="Run browser in headed mode")
+    p.add_argument("--user", default=None, metavar="EMAIL", help="Login username")
     p.add_argument("--password", default=None, metavar="PASSWORD", help="Login password")
-    p.add_argument(
-        "--dest",
-        default=None,
-        type=Path,
-        metavar="DIR",
-        help="Download directory (binary pipeline)",
-    )
-    p.add_argument(
-        "--search",
-        default=None,
-        metavar="QUERY",
-        help="Run a semantic search query against ChromaDB after ingest",
-    )
-    p.add_argument(
-        "--query-only",
-        action="store_true",
-        help="Skip ingestion; search existing ChromaDB with --search",
-    )
-    p.add_argument(
-        "--log-level",
-        default="WARNING",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        metavar="LEVEL",
-        help="Log verbosity: DEBUG | INFO | WARNING | ERROR (default: WARNING)",
-    )
+    p.add_argument("--dest", default=None, type=Path, metavar="DIR", help="Download directory")
+    p.add_argument("--search", default=None, metavar="QUERY", help="Semantic search query")
+    p.add_argument("--query-only", action="store_true", help="Skip ingestion; search ChromaDB")
+    p.add_argument("--log-level", default="WARNING", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Log verbosity")
     return p
-
 
 def _setup_logging(level: str) -> None:
     logging.basicConfig(
@@ -91,65 +59,91 @@ def _setup_logging(level: str) -> None:
         datefmt="%H:%M:%S",
     )
 
-
 # --------------------------------------------------------------------------- #
-# Query-only mode (no browser)
+# Search Helper
 # --------------------------------------------------------------------------- #
 
-def _query_only(query: str) -> None:
-    """Search existing ChromaDB content without running the browser."""
+def _run_search(query: str, require_results: bool = False) -> None:
+    """Helper to query ChromaDB and print a formatted table."""
     from rag.chroma_store import ChromaStore
-
     store = ChromaStore()
-    total = store.count()
-    if total == 0:
+    
+    if store.count() == 0:
         console.print("[red]ChromaDB is empty — run an ingestion first.[/]")
-        sys.exit(1)
+        if require_results: sys.exit(1)
+        return
 
-    console.print(f"[dim]Searching {total} chunks…[/]\n")
     results = store.query(query, n_results=5)
-
     if not results:
         console.print("[yellow]No results found.[/]")
-        sys.exit(0)
+        if require_results: sys.exit(0)
+        return
 
     t = Table(box=box.ROUNDED, show_lines=True, padding=(0, 1))
-    t.add_column("#",      style="dim",   width=3)
-    t.add_column("Score",  style="cyan",  width=7)
-    t.add_column("Source", style="dim",   width=30)
-    t.add_column("Text",   style="white")
+    t.add_column("#", style="dim", width=3)
+    t.add_column("Score", style="cyan", width=7)
+    t.add_column("Source", style="dim", width=30)
+    t.add_column("Text", style="white")
 
     for i, r in enumerate(results, 1):
         src = r.source_url[-28:] if len(r.source_url) > 28 else r.source_url
         t.add_row(str(i), f"{r.score:.3f}", src, r.text[:280].replace("\n", " "))
-
     console.print(t)
 
+# --------------------------------------------------------------------------- #
+# Interactive REPL Mode
+# --------------------------------------------------------------------------- #
+
+def interactive_mode(credentials: dict | None, dest_dir: Path | None, headless: bool) -> None:
+    """The persistent, conversational CLI loop."""
+    from core.orchestrator import run_sync
+    from dashboard.app import show_result
+
+    console.print(Panel(
+        "[bold cyan]GhostPipe Interactive Session[/]\n"
+        "[dim]The autonomous 3-headed ingestion daemon is online.[/]\n\n"
+        "[white]Commands:[/]\n"
+        "  [bold green]<your prompt>[/]   → Start an ingestion or download task\n"
+        "  [bold blue]/search <query>[/] → Semantic search across your local RAG memory\n"
+        "  [bold red]/q[/]               → Exit GhostPipe",
+        title="👻 Welcome to GhostPipe", border_style="cyan", padding=(1, 2)
+    ))
+
+    while True:
+        try:
+            user_input = Prompt.ask("\n[bold cyan]GhostPipe >[/]").strip()
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Force quitting GhostPipe...[/]")
+            break
+
+        if not user_input:
+            continue
+
+        lowered = user_input.lower()
+        if lowered in ("/q", "/quit", "exit", "quit"):
+            console.print("[dim]Shutting down GhostPipe... Goodbye![/]")
+            break
+
+        if lowered.startswith("/search"):
+            query = user_input[7:].strip()
+            if not query:
+                console.print("[yellow]Usage: /search <your question>[/]")
+            else:
+                _run_search(query)
+            continue
+
+        # If it's not a command, treat it as a pipeline request!
+        result = run_sync(
+            user_request=user_input,
+            credentials=credentials,
+            dest_dir=dest_dir,
+            headless=headless,
+        )
+        
+        show_result(result)
 
 # --------------------------------------------------------------------------- #
-# Inline post-ingest search (non-interactive, single query)
-# --------------------------------------------------------------------------- #
-
-def _inline_search(query: str, source_url: str | None = None) -> None:
-    from rag.chroma_store import ChromaStore
-
-    store = ChromaStore()
-    results = store.query(query, n_results=5, source_url=source_url)
-    if not results:
-        console.print("[yellow]No results for that query.[/]")
-        return
-
-    t = Table(box=box.ROUNDED, show_lines=True, padding=(0, 1))
-    t.add_column("#",      style="dim",   width=3)
-    t.add_column("Score",  style="cyan",  width=7)
-    t.add_column("Text",   style="white")
-    for i, r in enumerate(results, 1):
-        t.add_row(str(i), f"{r.score:.3f}", r.text[:300].replace("\n", " "))
-    console.print(t)
-
-
-# --------------------------------------------------------------------------- #
-# Main
+# Main Execution
 # --------------------------------------------------------------------------- #
 
 def main() -> None:
@@ -157,29 +151,25 @@ def main() -> None:
     args   = parser.parse_args()
     _setup_logging(args.log_level)
 
-    # --- Mode 1: --query-only -------------------------------------------
+    # 1. Query-only mode
     if args.query_only:
         if not args.search:
             console.print("[red]--query-only requires --search QUERY[/]")
             sys.exit(1)
-        _query_only(args.search)
+        _run_search(args.search, require_results=True)
         return
-
-    # --- Mode 2: Full pipeline ------------------------------------------
-    if not args.request:
-        parser.print_help()
-        sys.exit(0)
 
     credentials = None
     if args.user or args.password:
-        credentials = {
-            "username": args.user     or "",
-            "password": args.password or "",
-        }
+        credentials = {"username": args.user or "", "password": args.password or ""}
 
+    # 2. Interactive Mode (Triggered if no prompt is passed)
+    if not args.request:
+        interactive_mode(credentials, args.dest, not args.visible)
+        return
+
+    # 3. Single-Shot Mode (Traditional CLI)
     console.print(f"\n[bold cyan]GhostPipe[/]  [dim]{args.request}[/]\n")
-
-    # Lazy import so --help works without installing deps
     from core.orchestrator import run_sync
     from dashboard.app import show_result
 
@@ -189,19 +179,13 @@ def main() -> None:
         dest_dir=args.dest,
         headless=not args.visible,
     )
-
     show_result(result)
-
-    # Optional inline search after a successful text ingest
+    
     if args.search and result.success and result.pipeline == "text":
         console.rule("[bold]Inline Search Result[/]")
-        _inline_search(
-            args.search,
-            source_url=result.ingest.source_url if result.ingest else None,
-        )
+        _run_search(args.search)
 
     sys.exit(0 if result.success else 1)
-
 
 if __name__ == "__main__":
     main()
