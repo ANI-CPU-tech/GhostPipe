@@ -28,9 +28,10 @@ from core.intent_parser import classify_intent
 from core.router import choose_pipeline, Pipeline
 from browser.navigator import Navigator
 from browser.obstacle_handler import handle_obstacles, ObstacleResult
-from pipelines import binary_pipeline, text_pipeline
+from pipelines import binary_pipeline, text_pipeline, media_pipeline
 from pipelines.text_pipeline import IngestResult
 from transfer.aria2_manager import DownloadResult
+from pipelines.media_pipeline import MediaResult
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,10 @@ class GhostPipeResult:
 
     # Text/RAG pipeline output (set when pipeline == "text")
     ingest: IngestResult | None = None
-
+    
+    # Media pipeline output (set when pipeline == "media")
+    media: MediaResult | None = None
+    
     # Obstacle handling summary
     obstacle: ObstacleResult | None = None
 
@@ -76,24 +80,24 @@ class GhostPipeResult:
 _DOMAIN_RE = re.compile(r"^[\w.-]+\.[a-z]{2,}$", re.I)
 
 
-def _resolve_start_url(intent: dict) -> str | None:
+def _resolve_start_url(intent: dict, user_request: str) -> str | None:
     """
     Derive the starting URL to navigate to from the parsed intent.
-
-    Priority:
-      1. target_site if it already has a scheme (http/https)
-      2. target_site as a bare domain → prepend https://
-      3. search_hint → Google search as starting point
-      4. None — caller must handle this case
     """
-    site = (intent.get("target_site") or "").strip()
+    # 1. HARD OVERRIDE: If the user explicitly pasted a full URL, use it exactly.
+    url_match = re.search(r'(https?://[^\s]+)', user_request)
+    if url_match:
+        return url_match.group(1)
 
+    # 2. LLM's target site
+    site = (intent.get("target_site") or "").strip()
     if site:
         if site.startswith(("http://", "https://")):
             return site
         if _DOMAIN_RE.match(site):
             return f"https://{site}"
 
+    # 3. Google search fallback
     hint = (intent.get("search_hint") or "").strip()
     if hint:
         return f"https://www.google.com/search?q={quote_plus(hint)}"
@@ -162,7 +166,7 @@ async def run(
         logger.warning("Intent parser warning: %s", intent["error"])
 
     # --- 2. Resolve start URL -----------------------------------------
-    start_url = _resolve_start_url(intent)
+    start_url = _resolve_start_url(intent, user_request)
     if not start_url:
         return GhostPipeResult(
             success=False,
@@ -239,7 +243,29 @@ async def run(
                 error=dl_result.error,
             )
 
-        # --- 6b. Text / RAG pipeline ---------------------------------
+        # --- 6b. Media Pipeline --------------------------------------
+        elif pipeline == Pipeline.MEDIA:
+            try:
+                # yt-dlp is so powerful it just needs the original URL!
+                # Passing start_url instead of nav.current_url avoids cookie-wall redirects
+                media_res = await media_pipeline.run(
+                    url=start_url, 
+                    dest_dir=dest_dir
+                )
+            except Exception as e:
+                logger.exception("Media pipeline error: %s", e)
+                media_res = MediaResult(success=False, error=str(e))
+
+            return GhostPipeResult(
+                success=media_res.success,
+                pipeline=pipeline.value,
+                intent=intent,
+                media=media_res,
+                obstacle=obstacle_result,
+                error=media_res.error,
+            )
+
+        # --- 6c. Text / RAG pipeline ---------------------------------
         else:
             try:
                 ingest_result = await text_pipeline.run(
@@ -287,5 +313,3 @@ def run_sync(
         dest_dir=dest_dir,
         headless=headless,
     ))
-
-

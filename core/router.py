@@ -44,7 +44,9 @@ BINARY_CONTENT_TYPES = {
 class Pipeline(str, Enum):
     BINARY = "binary"
     TEXT   = "text"
+    MEDIA  = "media"
 
+MEDIA_DOMAINS = {"youtube.com", "youtu.be", "vimeo.com", "twitter.com", "x.com", "reddit.com"}
 
 def _url_looks_binary(url: str) -> bool:
     """Heuristic: does the URL path end with a known binary extension?"""
@@ -87,6 +89,16 @@ def choose_pipeline(
     if response_content_type and _content_type_is_binary(response_content_type):
         logger.info("Router → BINARY  [content-type: %s]", response_content_type)
         return Pipeline.BINARY
+
+    # 1.5 Media Domain check
+    from urllib.parse import urlparse
+    try:
+        domain = urlparse(current_url).netloc.lower()
+        if any(md in domain for md in MEDIA_DOMAINS):
+            logger.info("Router → MEDIA  https://matchedmedia.co/")
+            return Pipeline.MEDIA
+    except Exception:
+        pass
 
     # 2. URL extension
     if current_url and _url_looks_binary(current_url):

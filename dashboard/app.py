@@ -139,7 +139,26 @@ def show_ingest_result(ingest) -> None:
             border_style="red",
         ))
 
+# --------------------------------------------------------------------------- #
+# Phase 3c — Media download result
+# --------------------------------------------------------------------------- #
 
+def show_media_result(media) -> None:
+    if media.success:
+        console.print(Panel(
+            f"[green bold]✓ Media Extraction Complete[/]\n"
+            f"[dim]Title:[/] {media.title}\n"
+            f"[dim]File :[/] {media.filepath}",
+            title="[bold]Media Pipeline (yt-dlp)[/]",
+            border_style="green",
+        ))
+    else:
+        console.print(Panel(
+            f"[red bold]✗ Media Extraction Failed[/]\n"
+            f"[dim]Error:[/] {media.error or 'Unknown error'}",
+            title="[bold]Media Pipeline[/]",
+            border_style="red",
+        ))
 # --------------------------------------------------------------------------- #
 # Semantic search REPL (post-ingest demo)
 # --------------------------------------------------------------------------- #
@@ -218,6 +237,8 @@ def show_result(result: GhostPipeResult) -> None:
         show_ingest_result(result.ingest)
         if result.ingest.success:
             search_loop(source_url=result.ingest.source_url)
+    elif result.pipeline == "media" and result.media:
+        show_media_result(result.media)
 
     elif result.error and not result.intent:
         # Config / startup error — no intent was parsed
