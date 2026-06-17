@@ -4,7 +4,6 @@ GhostPipe — CLI Entry Point
 Usage examples:
     python main.py  (Starts Interactive REPL Mode)
     python main.py "Download the 114GB game installer from example-games.com"
-    python main.py --visible "Scrape the NeurIPS 2024 schedule"
     python main.py --search "What was Q3 revenue?" --query-only
 
 Options:
@@ -25,11 +24,19 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
-from rich.panel import Panel
-from rich.prompt import Prompt
+from rich.text import Text
 from rich import box
 
 console = Console()
+
+GHOSTPIPE_LOGO = """
+ [bold magenta]██████╗[/][bold bright_magenta] ██╗  ██╗[/][bold cyan] ██████╗ [/][bold bright_cyan]███████╗[/][bold bright_cyan]████████╗[/][bold cyan]██████╗ [/][bold bright_cyan]██╗[/][bold bright_cyan]██████╗ [/][bold cyan]███████╗[/]
+[bold magenta]██╔════╝[/][bold bright_magenta] ██║  ██║[/][bold cyan]██╔═══██╗[/][bold bright_cyan]██╔════╝[/][bold bright_cyan]╚══██╔══╝[/][bold cyan]██╔══██╗[/][bold bright_cyan]██║[/][bold bright_cyan]██╔══██╗[/][bold cyan]██╔════╝[/]
+[bold magenta]██║  ███╗[/][bold bright_magenta]███████║[/][bold cyan]██║   ██║[/][bold bright_cyan]███████╗[/][bold bright_cyan]   ██║   [/][bold cyan]██████╔╝[/][bold bright_cyan]██║[/][bold bright_cyan]██████╔╝[/][bold cyan]█████╗  [/]
+[bold magenta]██║   ██║[/][bold bright_magenta]██╔══██║[/][bold cyan]██║   ██║[/][bold bright_cyan]╚════██║[/][bold bright_cyan]   ██║   [/][bold cyan]██╔═══╝ [/][bold bright_cyan]██║[/][bold bright_cyan]██╔═══╝ [/][bold cyan]██╔══╝  [/]
+[bold magenta]╚██████╔╝[/][bold bright_magenta]██║  ██║[/][bold cyan]╚██████╔╝[/][bold bright_cyan]███████║[/][bold bright_cyan]   ██║   [/][bold cyan]██║     [/][bold bright_cyan]██║[/][bold bright_cyan]██║     [/][bold cyan]███████╗[/]
+ [bold magenta]╚═════╝ [/][bold bright_magenta]╚═╝  ╚═╝[/][bold cyan] ╚═════╝ [/][bold bright_cyan]╚══════╝[/][bold bright_cyan]   ╚═╝   [/][bold cyan]╚═╝     [/][bold bright_cyan]╚═╝[/][bold bright_cyan]╚═╝     [/][bold cyan]╚══════╝[/]
+"""
 
 # --------------------------------------------------------------------------- #
 # Argument parser
@@ -55,7 +62,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def _setup_logging(level: str) -> None:
     logging.basicConfig(
         level=getattr(logging, level),
-        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+        format="%(message)s", # Simplified logging for a cleaner CLI
         datefmt="%H:%M:%S",
     )
 
@@ -69,16 +76,17 @@ def _run_search(query: str, require_results: bool = False) -> None:
     store = ChromaStore()
     
     if store.count() == 0:
-        console.print("[red]ChromaDB is empty — run an ingestion first.[/]")
+        console.print("\n[red]ChromaDB is empty — run an ingestion first.[/]\n")
         if require_results: sys.exit(1)
         return
 
     results = store.query(query, n_results=5)
     if not results:
-        console.print("[yellow]No results found.[/]")
+        console.print("\n[yellow]No results found.[/]\n")
         if require_results: sys.exit(0)
         return
 
+    console.print()
     t = Table(box=box.ROUNDED, show_lines=True, padding=(0, 1))
     t.add_column("#", style="dim", width=3)
     t.add_column("Score", style="cyan", width=7)
@@ -89,6 +97,7 @@ def _run_search(query: str, require_results: bool = False) -> None:
         src = r.source_url[-28:] if len(r.source_url) > 28 else r.source_url
         t.add_row(str(i), f"{r.score:.3f}", src, r.text[:280].replace("\n", " "))
     console.print(t)
+    console.print()
 
 # --------------------------------------------------------------------------- #
 # Interactive REPL Mode
@@ -99,19 +108,27 @@ def interactive_mode(credentials: dict | None, dest_dir: Path | None, headless: 
     from core.orchestrator import run_sync
     from dashboard.app import show_result
 
-    console.print(Panel(
-        "[bold cyan]GhostPipe Interactive Session[/]\n"
-        "[dim]The autonomous 3-headed ingestion daemon is online.[/]\n\n"
-        "[white]Commands:[/]\n"
-        "  [bold green]<your prompt>[/]   → Start an ingestion or download task\n"
-        "  [bold blue]/search <query>[/] → Semantic search across your local RAG memory\n"
-        "  [bold red]/q[/]               → Exit GhostPipe",
-        title="👻 Welcome to GhostPipe", border_style="cyan", padding=(1, 2)
-    ))
+    # Print the stylized boot sequence
+    console.print("\n👻 [bold green]>>> ghostpipe[/]")
+    console.print("[dim]Loaded cached config and initialized subsystems.[/]\n")
+    console.print(GHOSTPIPE_LOGO)
+
+    tips = (
+        "[dim]Tips for getting started:\n"
+        "1. Type natural language requests to start an ingestion or download task.\n"
+        "2. Paste direct URLs for maximum speed and accuracy.\n"
+        "3. Use [bold magenta]/search <query>[/] to explore your local RAG memory.\n"
+        "4. [bold magenta]/q[/] or [bold magenta]/help[/] for more information.[/]\n"
+    )
+    console.print(tips)
 
     while True:
         try:
-            user_input = Prompt.ask("\n[bold cyan]GhostPipe >[/]").strip()
+            # The Status Bar
+            console.print(f"[dim cyan]~/GhostPipe (main*)[/]      [dim red]headless: {headless}[/]      [dim magenta]engine: Llama-3.1-8b[/]")
+            
+            # The Input Line
+            user_input = console.input("[bold magenta]>[/] ").strip()
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Force quitting GhostPipe...[/]")
             break
@@ -121,18 +138,23 @@ def interactive_mode(credentials: dict | None, dest_dir: Path | None, headless: 
 
         lowered = user_input.lower()
         if lowered in ("/q", "/quit", "exit", "quit"):
-            console.print("[dim]Shutting down GhostPipe... Goodbye![/]")
+            console.print("\n[dim]Shutting down 3-headed daemon... Goodbye![/]\n")
             break
+            
+        if lowered in ("/h", "/help", "help"):
+            console.print("\n[dim]Commands:\n  <prompt>  - Starts Orchestrator (Binary, Text, or Media)\n  /search   - Queries ChromaDB\n  /q        - Quits application[/]\n")
+            continue
 
         if lowered.startswith("/search"):
             query = user_input[7:].strip()
             if not query:
-                console.print("[yellow]Usage: /search <your question>[/]")
+                console.print("\n[yellow]Usage: /search <your question>[/]\n")
             else:
                 _run_search(query)
             continue
 
         # If it's not a command, treat it as a pipeline request!
+        console.print()
         result = run_sync(
             user_request=user_input,
             credentials=credentials,
@@ -182,7 +204,7 @@ def main() -> None:
     show_result(result)
     
     if args.search and result.success and result.pipeline == "text":
-        console.rule("[bold]Inline Search Result[/]")
+        console.print("\n[dim]Inline Search Result[/]")
         _run_search(args.search)
 
     sys.exit(0 if result.success else 1)
