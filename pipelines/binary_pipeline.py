@@ -178,6 +178,7 @@ async def _resolve_via_intercept(
 
     page.on("request", _on_request)
     try:
+        await page.wait_for_selector(selector, timeout=10000)
         await page.click(selector, timeout=6000)
         deadline = asyncio.get_event_loop().time() + INTERCEPT_TIMEOUT_MS / 1000
         while not resolved_url and asyncio.get_event_loop().time() < deadline:

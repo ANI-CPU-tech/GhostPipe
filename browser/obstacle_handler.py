@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 OBSTACLE_MAX_ROUNDS = 4       # max LLM-guided action rounds per page
 STEP_SETTLE_MS     = 1200     # ms to wait after each action before checking
-POST_ACTION_SETTLE = 2000     # ms to wait after full action sequence
+POST_ACTION_SETTLE = 6000     # ms to wait after full action sequence
 
 
 # --------------------------------------------------------------------------- #
