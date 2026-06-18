@@ -77,6 +77,13 @@ class PlaywrightPageShim:
     async def click(self, selector: str, timeout: int = 15000):
         elem = await self._get_element(selector)
         if elem:
+            # 1. nodriver will fail silently if the element is off-screen
+            await elem.scroll_into_view()
+            
+            # 2. Destroy all target="_blank" attributes on the page so links open in the CURRENT tab
+            await self.evaluate("document.querySelectorAll('a[target=\"_blank\"]').forEach(a => a.removeAttribute('target'));")
+            
+            # 3. Execute the click
             await elem.click()
 
     async def fill(self, selector: str, value: str, timeout: int = 15000):

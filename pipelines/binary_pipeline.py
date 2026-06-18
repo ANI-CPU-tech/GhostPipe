@@ -92,21 +92,26 @@ Strategies:
 
 _DOM_SNAPSHOT_JS = """
 () => {
-    const sel = ['a[href]','button','[role="button"]','input[type="submit"]',
-                  '[class*="download"]','[class*="btn"]','[id*="download"]'];
-    const els = document.querySelectorAll(sel.join(','));
+    // Only look for actionable items, ignore text inputs for binary downloads
+    const tags = ['button', 'a', '[role="button"]']; 
+    const els = document.querySelectorAll(tags.join(','));
     const out = [];
     for (const el of els) {
+        // ANTI-JUNK FILTER: Skip nav bars, sidebars, and footers to save massive tokens!
+        if (el.closest('header, nav, footer, aside, .sidebar')) continue;
+        
         const r = el.getBoundingClientRect();
         if (r.width === 0 && r.height === 0) continue;
+        
         out.push({
-            tag:  el.tagName.toLowerCase(),
-            id:   el.id || null,
-            cls:  (el.className || '').toString().trim().slice(0, 80),
-            text: (el.innerText || '').trim().slice(0, 80),
-            href: el.href || null,
+            tag: el.tagName.toLowerCase(),
+            text: (el.innerText || '').trim().slice(0, 40),
+            // INCREASED TO 500 CHARS to support AkiraBox's massive crypto-tokens!
+            href: el.href ? el.href.toString().slice(0, 500) : null, 
         });
-        if (out.length >= 30) break;
+        
+        // Increased cutoff to 40 since we filtered out the junk
+        if (out.length >= 40) break; 
     }
     return out;
 }
@@ -281,6 +286,8 @@ async def run(
         method=method,
     )
     logger.info("Resolved download: %s  method=%s", resolved.url, resolved.method)
+    
+    # Automatically kill the browser to free up resources before the aria2c loop
     page.browser.stop()
 
     # 4. Hand off to aria2c
