@@ -23,7 +23,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from groq import Groq
-from playwright.async_api import Page, Request, Response
+from typing import Any
+from browser.navigator import PlaywrightPageShim as Page
+Request = Any
+Response = Any
 
 import config
 from transfer.aria2_manager import Aria2Manager, DownloadResult
@@ -278,6 +281,7 @@ async def run(
         method=method,
     )
     logger.info("Resolved download: %s  method=%s", resolved.url, resolved.method)
+    page.browser.stop()
 
     # 4. Hand off to aria2c
     own_manager = aria2_manager is None

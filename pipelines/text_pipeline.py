@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass, field
 
 import trafilatura
-from playwright.async_api import Page
+from browser.navigator import PlaywrightPageShim as Page
 
 from rag.chunker import Chunk, chunk_text
 from rag.chroma_store import ChromaStore, QueryResult

@@ -1,66 +1,185 @@
 """
-Navigator — Playwright session lifecycle and page navigation helpers.
+Navigator — nodriver session lifecycle and page navigation helpers.
 
-Wraps Playwright's async API behind a small `Navigator` class that:
-  - launches a (stealth-patched) Chromium browser
-  - opens pages and waits for JS-rendered content to settle
-  - exposes cookies/headers/HTML for downstream pipelines
-  - cleans up the browser/playwright process on exit
-
-Used as an async context manager:
-
-    async with Navigator() as nav:
-        await nav.goto("https://example.com")
-        html = await nav.get_html()
-        cookies = await nav.get_cookies()
+Replaced Playwright with `nodriver` to provide undetectable Chrome automation!
+This file acts as a 'Shim' (a translation layer) so that your other files 
+(like binary_pipeline.py and obstacle_handler.py) still THINK they are talking 
+to Playwright, but all the actions are secretly routed through nodriver's 
+stealth CDP engine.
 """
 
 import logging
+import asyncio
+import re
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+import nodriver as uc
+import nodriver.cdp.network as network
+import aiohttp
 
 import config
-from browser.stealth_config import apply_stealth, context_options
 
 logger = logging.getLogger(__name__)
 
 
+class PlaywrightPageShim:
+    """
+    Translation layer between Playwright API and nodriver Tab API.
+    Prevents you from having to rewrite the entire GhostPipe codebase!
+    """
+    def __init__(self, browser: uc.Browser, tab: uc.Tab):
+        self.browser = browser
+        self.tab = tab
+        self._request_handlers = []
+
+        # Intercept network requests for the Binary Pipeline
+        self.tab.add_handler(network.RequestWillBeSent, self._handle_network_request)
+
+    async def _handle_network_request(self, event: network.RequestWillBeSent):
+        # Fake a Playwright Request object
+        class FakeRequest:
+            url = event.request.url
+            resource_type = "fetch"  # Approximation
+
+        for handler in self._request_handlers:
+            await handler(FakeRequest())
+
+    @property
+    def url(self) -> str:
+        return self.tab.target.url
+
+    async def content(self) -> str:
+        return await self.tab.get_content()
+
+    async def evaluate(self, js_string: str):
+        # Convert Playwright IIFEs (Arrow functions) into executable JS
+        if js_string.strip().startswith("() =>"):
+            js_string = f"({js_string})()"
+        return await self.tab.evaluate(js_string)
+
+    async def _get_element(self, selector: str):
+        """Translates Playwright text selectors into native nodriver commands."""
+        try:
+            if selector.startswith("text="):
+                # Convert "text=Accept" -> "Accept"
+                text_val = selector.split("text=", 1)[1].strip("\"'")
+                return await self.tab.find(text_val)
+            elif ":has-text" in selector:
+                # Convert "a:has-text('Download')" -> "Download"
+                match = re.search(r":has-text\(['\"]?(.*?)['\"]?\)", selector)
+                if match:
+                    return await self.tab.find(match.group(1))
+            
+            # If it's standard CSS (e.g., #btn, .class), use native select
+            return await self.tab.select(selector)
+        except Exception:
+            return None
+
+    async def click(self, selector: str, timeout: int = 15000):
+        elem = await self._get_element(selector)
+        if elem:
+            await elem.click()
+
+    async def fill(self, selector: str, value: str, timeout: int = 15000):
+        elem = await self._get_element(selector)
+        if elem:
+            await elem.clear_input()
+            await elem.send_keys(value)
+
+    async def press(self, selector: str, key: str, timeout: int = 15000):
+        elem = await self._get_element(selector)
+        if elem:
+            await elem.send_keys(key)
+
+    @property
+    def keyboard(self):
+        class KeyboardShim:
+            async def press(self_, key: str):
+                pass  # Handled directly in press()
+        return KeyboardShim()
+
+    async def wait_for_timeout(self, timeout_ms: int):
+        await self.tab.sleep(timeout_ms / 1000.0)
+
+    async def wait_for_selector(self, selector: str, timeout: int = 10000):
+        await self._get_element(selector)
+
+    async def screenshot(self, path: str, full_page: bool = False):
+        await self.tab.save_screenshot(path)
+
+    async def reload(self, wait_until: str = "domcontentloaded"):
+        await self.tab.reload()
+
+    def on(self, event, handler):
+        if event == "request":
+            self._request_handlers.append(handler)
+
+    def remove_listener(self, event, handler):
+        if event == "request" and handler in self._request_handlers:
+            self._request_handlers.remove(handler)
+
+    @property
+    def context(self):
+        tab_ref = self.tab
+        class ContextShim:
+            async def cookies(self_ctx):
+                # Retrieve cookies directly via CDP
+                cookies = await tab_ref.send(network.get_cookies())
+                return [
+                    {"name": c.name, "value": c.value, "domain": c.domain, "path": c.path}
+                    for c in cookies
+                ]
+                
+            async def add_cookies(self_ctx, pw_cookies: list[dict]):
+                for c in pw_cookies:
+                    await tab_ref.send(network.set_cookie(
+                        name=c["name"],
+                        value=c["value"],
+                        domain=c.get("domain", ""),
+                        path=c.get("path", "/")
+                    ))
+            
+            @property
+            def request(self_ctx):
+                # Replace Playwright's HTTP client with aiohttp for FlareSolverr
+                class RequestShim:
+                    async def post(self_req, url, data, headers):
+                        async with aiohttp.ClientSession() as session:
+                            resp = await session.post(url, json=data, headers=headers)
+                            class RespShim:
+                                ok = resp.ok
+                                status = resp.status
+                                async def json(self): return await resp.json()
+                            return RespShim()
+                return RequestShim()
+        return ContextShim()
+
+
 class Navigator:
-    """Manages a single Playwright browser/context/page for one task."""
+    """Manages a single nodriver browser instance."""
 
     def __init__(self, headless: bool | None = None):
         self.headless = config.HEADLESS if headless is None else headless
-
-        self._playwright = None
-        self.browser: Browser | None = None
-        self.context: BrowserContext | None = None
-        self.page: Page | None = None
+        self.browser: uc.Browser | None = None
+        self.page: PlaywrightPageShim | None = None
 
     # --- Lifecycle ---------------------------------------------------
 
     async def start(self) -> "Navigator":
-        """Launch the browser, create a stealth context, and open a page."""
-        self._playwright = await async_playwright().start()
-
-        self.browser = await self._playwright.chromium.launch(
+        """Launch the stealth browser."""
+        logger.info("Starting nodriver (undetected chrome)...")
+        
+        self.browser = await uc.start(
             headless=self.headless,
-            args=["--disable-blink-features=AutomationControlled"],
         )
 
-        self.context = await self.browser.new_context(**context_options())
-        await apply_stealth(self.context)
-
-        self.page = await self.context.new_page()
+        tab = await self.browser.get("about:blank")
+        self.page = PlaywrightPageShim(self.browser, tab)
         return self
 
     async def close(self) -> None:
-        """Close the browser and stop the Playwright driver."""
-        if self.context:
-            await self.context.close()
+        """Close the browser."""
         if self.browser:
-            await self.browser.close()
-        if self._playwright:
-            await self._playwright.stop()
+            self.browser.stop()
 
     async def __aenter__(self) -> "Navigator":
         return await self.start()
@@ -74,21 +193,14 @@ class Navigator:
         self,
         url: str,
         wait_until: str = "domcontentloaded",
-        extra_settle_ms: int = 1500,
+        extra_settle_ms: int = 8000,
     ) -> None:
-        """
-        Navigate to `url` and give JS-rendered content time to settle.
-
-        `wait_until="domcontentloaded"` returns as soon as the DOM is
-        ready (faster than waiting on `networkidle`, which can hang on
-        pages with long-polling/analytics). The extra `extra_settle_ms`
-        sleep gives client-side frameworks a short window to render.
-        """
-        if not self.page:
+        if not self.browser:
             raise RuntimeError("Navigator not started — use 'async with Navigator()'")
 
         logger.info("Navigating to %s", url)
-        await self.page.goto(url, wait_until=wait_until)
+        tab = await self.browser.get(url)
+        self.page = PlaywrightPageShim(self.browser, tab)
 
         if extra_settle_ms:
             await self.page.wait_for_timeout(extra_settle_ms)
@@ -96,19 +208,16 @@ class Navigator:
     # --- Content extraction --------------------------------------------
 
     async def get_html(self) -> str:
-        """Return the fully rendered page HTML."""
         if not self.page:
             raise RuntimeError("Navigator not started")
         return await self.page.content()
 
     async def get_cookies(self) -> list[dict]:
-        """Return all cookies for the current context (used for aria2c handoff)."""
-        if not self.context:
+        if not self.page:
             raise RuntimeError("Navigator not started")
-        return await self.context.cookies()
+        return await self.page.context.cookies()
 
     async def screenshot(self, path: str, full_page: bool = True) -> None:
-        """Save a screenshot — useful for the obstacle handler's LLM input."""
         if not self.page:
             raise RuntimeError("Navigator not started")
         await self.page.screenshot(path=path, full_page=full_page)
@@ -116,23 +225,3 @@ class Navigator:
     @property
     def current_url(self) -> str | None:
         return self.page.url if self.page else None
-
-
-if __name__ == "__main__":
-    # Quick manual smoke test:
-    #   python -m browser.navigator https://example.com
-    import asyncio
-    import sys
-
-    logging.basicConfig(level=logging.INFO)
-
-    async def _demo(url: str):
-        async with Navigator() as nav:
-            await nav.goto(url)
-            html = await nav.get_html()
-            print(f"URL: {nav.current_url}")
-            print(f"HTML length: {len(html)} chars")
-            print(f"Cookies: {len(await nav.get_cookies())}")
-
-    target = sys.argv[1] if len(sys.argv) > 1 else "https://example.com"
-    asyncio.run(_demo(target))

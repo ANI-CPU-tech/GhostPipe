@@ -1,24 +1,9 @@
 """
 Obstacle Handler — LLM-assisted handling of login walls, cookie-consent
 banners, and "generate link" gate pages.
-
-Strategy:
-  1. Take a screenshot + extract a compact DOM snapshot (visible interactive
-     elements only — buttons, inputs, links, dialogs).
-  2. Send both to Groq/Llama 3.1 with a prompt describing what GhostPipe is
-     trying to accomplish.
-  3. The LLM returns a JSON action plan: a list of steps like
-       {"action": "click", "selector": "#accept-btn"}
-     or
-       {"action": "fill",  "selector": "#email", "value": "user@example.com"}
-  4. Execute each step via Playwright, with a brief settle between steps.
-  5. Return the resulting page state (HTML + URL) so the caller can check
-     whether the obstacle is cleared or another pass is needed.
-
-Max retries are capped (OBSTACLE_MAX_ROUNDS) to avoid infinite loops on
-genuinely unbeatable gates (Cloudflare Turnstile, etc.).
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -27,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from groq import Groq
-from playwright.async_api import Page
+from browser.navigator import PlaywrightPageShim as Page
 
 import config
 
@@ -37,30 +22,26 @@ OBSTACLE_MAX_ROUNDS = 4       # max LLM-guided action rounds per page
 STEP_SETTLE_MS     = 1200     # ms to wait after each action before checking
 POST_ACTION_SETTLE = 6000     # ms to wait after full action sequence
 
-
 # --------------------------------------------------------------------------- #
 # Data classes
 # --------------------------------------------------------------------------- #
 
 ActionType = Literal["click", "fill", "press", "wait", "done", "fail"]
 
-
 @dataclass
 class Action:
     action: ActionType
     selector: str | None = None
-    value: str | None = None      # used by "fill" and "press"
+    value: str | None = None      
     reason: str = ""
-
 
 @dataclass
 class ObstacleResult:
-    cleared: bool                   # True → obstacle gone, proceed
+    cleared: bool                   
     final_url: str = ""
     final_html: str = ""
     actions_taken: list[Action] = field(default_factory=list)
     error: str | None = None
-
 
 # --------------------------------------------------------------------------- #
 # DOM snapshot helper
@@ -71,7 +52,8 @@ _DOM_SNAPSHOT_JS = """
     const tags = ['input','button','a','select','textarea',
                    '[role="button"]','[role="dialog"]',
                    '[class*="modal"]','[class*="popup"]',
-                   '[class*="login"]','[class*="cookie"]'];
+                   '[class*="login"]','[class*="cookie"]',
+                   'iframe'];
     const els = document.querySelectorAll(tags.join(','));
     const out = [];
     for (const el of els) {
@@ -80,28 +62,30 @@ _DOM_SNAPSHOT_JS = """
         out.push({
             tag:  el.tagName.toLowerCase(),
             id:   el.id   || null,
-            cls:  (el.className || '').toString().trim().slice(0, 80),
-            text: (el.innerText || el.value || el.placeholder || '').trim().slice(0, 80),
+            // Compressed to save LLM tokens!
+            cls:  (el.className || '').toString().trim().slice(0, 35),
+            text: (el.innerText || el.value || el.placeholder || '').trim().slice(0, 35),
             type: el.type  || null,
-            href: el.href  || null,
-            name: el.name  || null,
+            href: el.href ? el.href.toString().slice(0, 60) : null,
         });
-        if (out.length >= 40) break;   // cap to keep prompt small
+        if (out.length >= 20) break;   
     }
     return out;
 }
 """
 
-
 async def _dom_snapshot(page: Page) -> str:
     """Return a compact JSON string of visible interactive elements."""
     try:
-        elements = await page.evaluate(_DOM_SNAPSHOT_JS)
+        # ANTI-HANG SHIELD: 5-second timeout to prevent Cloudflare from trapping the script
+        elements = await asyncio.wait_for(page.evaluate(_DOM_SNAPSHOT_JS), timeout=5.0)
         return json.dumps(elements, indent=2)
+    except asyncio.TimeoutError:
+        logger.warning("DOM snapshot timed out (Cloudflare CDP trap active).")
+        return "[]"
     except Exception as e:
         logger.warning("DOM snapshot failed: %s", e)
         return "[]"
-
 
 async def _screenshot_b64(page: Page) -> str:
     """Return a base64-encoded PNG screenshot of the current viewport."""
@@ -110,7 +94,6 @@ async def _screenshot_b64(page: Page) -> str:
     await page.screenshot(path=path, full_page=False)
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode()
-
 
 # --------------------------------------------------------------------------- #
 # LLM prompt + response parsing
@@ -122,42 +105,33 @@ autonomous web-navigation agent.
 You will receive:
   - GOAL: what the agent is trying to reach
   - CURRENT URL: the page the browser is on
-  - DOM SNAPSHOT: a JSON list of visible interactive elements (tag, id, class, \
-text, type, href, name)
+  - DOM SNAPSHOT: a JSON list of visible interactive elements
 
 Your job: decide the MINIMUM set of actions needed to clear any obstacle \
-(login wall, cookie banner, "generate link" gate, age check, popup) so the \
+(login wall, cookie banner, "generate link" gate, popup) so the \
 browser can reach the actual content.
 
-Respond ONLY with a JSON object, no markdown, matching:
+Respond ONLY with a JSON object matching:
 {
-  "assessment": "one sentence describing what obstacle (if any) is present",
+  "assessment": "one sentence describing the obstacle",
   "obstacle_present": true | false,
   "actions": [
-    {"action": "click",  "selector": "CSS selector or text selector",  "reason": "short reason"},
-    {"action": "fill",   "selector": "CSS selector", "value": "text to type", "reason": "..."},
-    {"action": "press",  "selector": "CSS selector", "value": "Enter",        "reason": "..."},
-    {"action": "wait",   "selector": null,            "value": null,           "reason": "let page settle"},
-    {"action": "done",   "selector": null,            "value": null,           "reason": "no obstacle"}
+    {"action": "click",  "selector": "CSS selector",  "reason": "..."}
   ]
 }
 
 Rules:
-- Use Playwright CSS selectors or text selectors like: text=Accept, #btn-id, .class-name
+- Use STRICT standard CSS selectors only (e.g., #btn-id, .class-name, [href="/download"]). DO NOT use "text=" pseudo-selectors.
 - If no obstacle: single action {"action": "done", ...}
-- If obstacle is unbeatable (Cloudflare Turnstile, reCAPTCHA): single action \
-{"action": "fail", "reason": "describe why"}
-- Keep actions to minimum — do not over-click. Prefer id/name selectors over class when available.
+- Keep actions to minimum — do not over-click. Prefer id/name selectors over class.
 """
-
 
 def _parse_actions(raw_json: str) -> tuple[bool, list[Action]]:
     """Parse LLM JSON → (obstacle_present, list of Action)."""
     try:
         data = json.loads(raw_json)
     except json.JSONDecodeError as e:
-        logger.warning("Obstacle handler: invalid JSON from LLM: %s", e)
-        return False, [Action(action="fail", reason=f"LLM returned invalid JSON: {e}")]
+        return False, [Action(action="fail", reason=f"Invalid JSON: {e}")]
 
     obstacle_present = bool(data.get("obstacle_present", False))
     raw_actions = data.get("actions", [])
@@ -179,45 +153,37 @@ def _parse_actions(raw_json: str) -> tuple[bool, list[Action]]:
 
     return obstacle_present, actions
 
-
 # --------------------------------------------------------------------------- #
 # Playwright action executor
 # --------------------------------------------------------------------------- #
 
 async def _execute_action(page: Page, action: Action) -> bool:
-    """
-    Execute a single action on the page.
-
-    Returns True if successful, False if it fails (selector not found, etc.).
-    Failures are logged as warnings — the loop continues to the next step.
-    """
+    """Execute a single action on the page with Anti-Hang shields."""
     try:
         if action.action == "click":
-            await page.click(action.selector, timeout=6000)
-
+            await asyncio.wait_for(page.click(action.selector), timeout=8.0)
         elif action.action == "fill":
-            await page.fill(action.selector, action.value or "", timeout=6000)
-
+            await asyncio.wait_for(page.fill(action.selector, action.value or ""), timeout=8.0)
         elif action.action == "press":
             key = action.value or "Enter"
             if action.selector:
-                await page.press(action.selector, key, timeout=6000)
+                await asyncio.wait_for(page.press(action.selector, key), timeout=8.0)
             else:
                 await page.keyboard.press(key)
-
         elif action.action == "wait":
             await page.wait_for_timeout(STEP_SETTLE_MS)
-
         elif action.action in ("done", "fail"):
-            return True   # handled by caller
+            return True
 
         await page.wait_for_timeout(STEP_SETTLE_MS)
         return True
 
+    except asyncio.TimeoutError:
+        logger.warning("Action %s on %r timed out (element not found or blocked)", action.action, action.selector)
+        return False
     except Exception as e:
         logger.warning("Action %s on %r failed: %s", action.action, action.selector, e)
         return False
-
 
 # --------------------------------------------------------------------------- #
 # Public API
@@ -230,49 +196,39 @@ async def handle_obstacles(
     groq_client: Groq | None = None,
     max_rounds: int = OBSTACLE_MAX_ROUNDS,
 ) -> ObstacleResult:
-    """
-    Detect and clear obstacles on the current page using an LLM-guided loop.
-
-    Args:
-        page:        Active Playwright Page already loaded to the target URL.
-        goal:        Natural-language description of what GhostPipe is trying
-                     to reach (passed to the LLM as context).
-        credentials: Optional dict with "username"/"password" keys so the LLM
-                     can instruct fill actions to use real credentials.
-        groq_client: Pre-built Groq client (optional; built from config if None).
-        max_rounds:  Maximum LLM round-trips before giving up.
-
-    Returns:
-        ObstacleResult with .cleared=True if the page appears unblocked,
-        or .cleared=False if a FAIL action was returned or max rounds hit.
-    """
+    """Detect and clear obstacles on the current page."""
+    
     if not config.GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY not set — obstacle handler requires Groq")
+        raise RuntimeError("GROQ_API_KEY not set")
 
     client = groq_client or Groq(api_key=config.GROQ_API_KEY)
     all_actions: list[Action] = []
 
-    # Build credentials context string for the system prompt
     creds_hint = ""
     if credentials:
         u = credentials.get("username", "")
         p = credentials.get("password", "")
         if u or p:
-            creds_hint = (
-                f"\nCREDENTIALS AVAILABLE — if a login form is present, fill:\n"
-                f"  username/email → {u}\n"
-                f"  password → {p}\n"
-            )
+            creds_hint = f"\nCREDENTIALS AVAILABLE:\n  username → {u}\n  password → {p}\n"
 
     for round_num in range(1, max_rounds + 1):
         logger.info("Obstacle handler round %d/%d — %s", round_num, max_rounds, page.url)
 
-        dom    = await _dom_snapshot(page)
-        user_content = (
-            f"GOAL: {goal}{creds_hint}\n\n"
-            f"CURRENT URL: {page.url}\n\n"
-            f"DOM SNAPSHOT:\n{dom}"
-        )
+        # --- TURNSTILE AUTO-SNIPER ---
+        try:
+            logger.info("Scanning for enterprise security gates...")
+            # If nodriver sees the Cloudflare iframe, shoot it directly!
+            cf_box = await asyncio.wait_for(page.tab.select('iframe[src*="cloudflare"]'), timeout=2.0)
+            if cf_box:
+                logger.warning("Turnstile Auto-Sniper engaged! Clicking checkbox directly...")
+                await cf_box.click()
+                await page.wait_for_timeout(6000)
+                continue # Page cleared, skip the LLM and loop again
+        except Exception:
+            pass # No Turnstile found, proceed to normal LLM flow
+
+        dom = await _dom_snapshot(page)
+        user_content = f"GOAL: {goal}{creds_hint}\n\nCURRENT URL: {page.url}\n\nDOM SNAPSHOT:\n{dom}"
 
         try:
             response = client.chat.completions.create(
@@ -286,54 +242,33 @@ async def handle_obstacles(
             )
             raw = response.choices[0].message.content
         except Exception as e:
-            logger.error("Groq call failed in obstacle handler: %s", e)
-            return ObstacleResult(
-                cleared=False,
-                final_url=page.url,
-                actions_taken=all_actions,
-                error=str(e),
-            )
+            logger.error("Groq call failed: %s", e)
+            return ObstacleResult(cleared=False, final_url=page.url, actions_taken=all_actions, error=str(e))
 
         obstacle_present, actions = _parse_actions(raw)
         all_actions.extend(actions)
 
-        # Check for terminal actions before executing
+        # Check for terminal actions
         if not obstacle_present or (len(actions) == 1 and actions[0].action == "done"):
             logger.info("No obstacle detected — page is clear")
-            return ObstacleResult(
-                cleared=True,
-                final_url=page.url,
-                final_html=await page.content(),
-                actions_taken=all_actions,
-            )
+            try:
+                final_html = await asyncio.wait_for(page.content(), timeout=5.0)
+            except:
+                final_html = ""
+            return ObstacleResult(cleared=True, final_url=page.url, final_html=final_html, actions_taken=all_actions)
 
         if any(a.action == "fail" for a in actions):
             reason = next(a.reason for a in actions if a.action == "fail")
             logger.warning("Obstacle handler gave up: %s", reason)
-            return ObstacleResult(
-                cleared=False,
-                final_url=page.url,
-                actions_taken=all_actions,
-                error=f"Unbeatable obstacle: {reason}",
-            )
+            return ObstacleResult(cleared=False, final_url=page.url, actions_taken=all_actions, error=f"Unbeatable obstacle: {reason}")
 
-        # Execute the action sequence
+        # Execute actions
         for action in actions:
             if action.action in ("done", "fail"):
                 break
             await _execute_action(page, action)
 
-        # Let the page settle after a full action sequence
         await page.wait_for_timeout(POST_ACTION_SETTLE)
 
-    # Max rounds hit
     logger.warning("Obstacle handler hit max rounds (%d) without clearing", max_rounds)
-    return ObstacleResult(
-        cleared=False,
-        final_url=page.url,
-        final_html=await page.content(),
-        actions_taken=all_actions,
-        error=f"Max rounds ({max_rounds}) reached without clearing obstacle",
-    )
-
-
+    return ObstacleResult(cleared=False, final_url=page.url, final_html="", actions_taken=all_actions, error="Max rounds reached")

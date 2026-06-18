@@ -28,6 +28,8 @@ CHROMA_DB_PATH = Path(os.getenv("CHROMA_DB_PATH", "./data/chroma_db")).resolve()
 
 # --- Browser ---
 HEADLESS = os.getenv("HEADLESS", "true").lower() in ("1", "true", "yes")
+# --- FlareSolverr ---
+FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
 
 
 def ensure_dirs() -> None:
