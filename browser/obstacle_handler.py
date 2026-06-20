@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from groq import Groq
-from browser.navigator import PlaywrightPageShim as Page
+from playwright.async_api import Page
 
 import config
 
@@ -217,11 +217,11 @@ async def handle_obstacles(
         # --- TURNSTILE AUTO-SNIPER ---
         try:
             logger.info("Scanning for enterprise security gates...")
-            # If nodriver sees the Cloudflare iframe, shoot it directly!
-            cf_box = await asyncio.wait_for(page.tab.select('iframe[src*="cloudflare"]'), timeout=2.0)
-            if cf_box:
+            # Native Playwright locator for the Cloudflare iframe
+            cf_box = page.locator('iframe[src*="cloudflare"]')
+            if await cf_box.count() > 0 and await cf_box.first.is_visible():
                 logger.warning("Turnstile Auto-Sniper engaged! Clicking checkbox directly...")
-                await cf_box.click()
+                await asyncio.wait_for(cf_box.first.click(), timeout=2.0)
                 await page.wait_for_timeout(6000)
                 continue # Page cleared, skip the LLM and loop again
         except Exception:
