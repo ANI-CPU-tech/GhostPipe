@@ -1,4 +1,3 @@
-
 # --- Core / CLI ---
 click>=8.1
 python-dotenv>=1.0
@@ -9,7 +8,7 @@ groq>=0.9.0
 
 # --- Browser Automation ---
 playwright>=1.44
-playwright-stealth>=1.0.6
+camoufox  # Replaced playwright-stealth for C++ level anti-detect
 
 # --- High-Speed Binary Transfer (aria2c RPC client) ---
 aria2p>=0.12.0
