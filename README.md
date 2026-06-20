@@ -27,8 +27,31 @@ GhostPipe is an autonomous, stealthy data-ingestion daemon. You give it a natura
 
 ---
 
+## Screenshots
+
+<p align="center">
+  <img src="assets/asset11.jpeg" alt="GhostPipe Interactive REPL" width="800" />
+  <br/>
+  <em>Interactive REPL — boot sequence, status bar, and slash command shell</em>
+</p>
+
+<p align="center">
+  <img src="assets/asset12.jpeg" alt="GhostPipe Download Progress" width="800" />
+  <br/>
+  <em>Live download progress — rich progress bar with speed, ETA, and aria2c handoff</em>
+</p>
+
+<p align="center">
+  <img src="assets/asset13.jpeg" alt="GhostPipe RAG Search Results" width="800" />
+  <br/>
+  <em>RAG semantic search results — ChromaDB query output rendered as a rich table</em>
+</p>
+
+---
+
 ## Table of Contents
 
+- [Screenshots](#screenshots)
 - [Key Features](#key-features)
 - [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
