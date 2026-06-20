@@ -1,7 +1,7 @@
-# GhostPipe
-
 <p align="center">
-  <strong>Autonomous Headless Ingestion Daemon — bridging the gap between websites built for humans and pipelines built for machines.</strong>
+  <h1 align="center">👻 GhostPipe</h1>
+  <p align="center"><strong>Autonomous Headless Ingestion Daemon</strong></p>
+  <p align="center"><em>Bridging the gap between websites built for humans and pipelines built for machines.</em></p>
 </p>
 
 <p align="center">
