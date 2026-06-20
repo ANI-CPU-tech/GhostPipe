@@ -30,6 +30,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import aria2p
+from rich.progress import (
+    Progress,
+    TextColumn,
+    BarColumn,
+    DownloadColumn,
+    TransferSpeedColumn,
+    TimeRemainingColumn,
+)
 
 import config
 
@@ -256,10 +264,6 @@ class Aria2Manager:
         """
         Async generator that yields DownloadProgress every `poll_interval` seconds
         until the download completes or errors.
-
-        Usage:
-            async for progress in mgr.watch(gid):
-                print(f"{progress.percent:.1f}% @ {progress.speed_bps/1e6:.1f} MB/s")
         """
         if not self._api:
             raise RuntimeError("Aria2Manager not started")
@@ -299,38 +303,51 @@ class Aria2Manager:
     async def wait_for_completion(self, gid: str) -> DownloadResult:
         """
         Block until the download is complete or errors. Returns DownloadResult.
-        Logs progress every poll interval.
+        Uses rich.progress to render a sleek, self-updating progress bar.
         """
         result_path: Path | None = None
-        last_status = ""
+        
+        # Build the Rich Progress UI
+        with Progress(
+            TextColumn("[bold cyan]{task.fields[filename]}", justify="right"),
+            BarColumn(bar_width=None, complete_style="green", finished_style="bold green"),
+            "[progress.percentage]{task.percentage:>3.1f}%",
+            "•",
+            DownloadColumn(),
+            "•",
+            TransferSpeedColumn(),
+            "•",
+            TimeRemainingColumn(),
+            expand=True,
+            transient=False  # Keep the bar visible when finished
+        ) as progress_ui:
+            
+            task_id = progress_ui.add_task("Downloading...", total=100, filename="Connecting...")
 
-        async for progress in self.watch(gid):
-            if progress.status != last_status or progress.status == "active":
-                speed_mb = progress.speed_bps / 1_000_000
-                total_mb = progress.total_bytes / 1_000_000
-                logger.info(
-                    "GID=%s  %.1f%%  %.1f/%.1f MB  %.2f MB/s  ETA=%ss",
-                    gid,
-                    progress.percent,
-                    progress.completed_bytes / 1_000_000,
-                    total_mb,
-                    speed_mb,
-                    progress.eta_seconds,
+            async for p in self.watch(gid):
+                display_name = p.filename if p.filename else "Downloading..."
+                # Truncate really long filenames for the UI
+                if len(display_name) > 30:
+                    display_name = display_name[:27] + "..."
+
+                # Update the progress bar in place!
+                progress_ui.update(
+                    task_id,
+                    total=p.total_bytes,
+                    completed=p.completed_bytes,
+                    filename=display_name
                 )
-                last_status = progress.status
 
-            if progress.status == "complete":
-                dl = self._api.get_download(gid)
-                files = dl.files
-                if files:
-                    result_path = Path(files[0].path)
-                return DownloadResult(success=True, gid=gid, filepath=result_path)
+                if p.status == "complete":
+                    dl = self._api.get_download(gid)
+                    files = dl.files
+                    if files:
+                        result_path = Path(files[0].path)
+                    return DownloadResult(success=True, gid=gid, filepath=result_path)
 
-            if progress.status == "error":
-                dl = self._api.get_download(gid)
-                err = getattr(dl, "error_message", "Unknown aria2c error")
-                return DownloadResult(success=False, gid=gid, error=err)
+                if p.status == "error":
+                    dl = self._api.get_download(gid)
+                    err = getattr(dl, "error_message", "Unknown aria2c error")
+                    return DownloadResult(success=False, gid=gid, error=err)
 
         return DownloadResult(success=False, gid=gid, error="Download ended unexpectedly")
-
-
