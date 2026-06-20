@@ -1,17 +1,12 @@
 """
-Stealth Config — playwright-stealth patches and browser-context defaults
-to reduce common headless-detection fingerprints.
+Stealth Config — context defaults for headless browsing.
 
-This is NOT a Cloudflare/enterprise anti-bot bypass — see project docs,
-section "Reality Checks". It patches things like navigator.webdriver,
-chrome.runtime, plugin/mimeType arrays, and WebGL vendor strings so that
-basic bot checks (login walls, JS-rendered pages, simple fingerprint
-gates) behave like a normal browser.
+Note: With the upgrade to Camoufox, C++ level anti-detect stealth 
+is handled natively by the browser engine. The old `playwright-stealth` 
+package has been removed to prevent engine conflicts.
 """
 
 from playwright.async_api import BrowserContext
-from playwright_stealth import Stealth
-
 
 # A realistic, recent desktop user agent. Kept here so it's easy to
 # rotate/update in one place.
@@ -23,10 +18,6 @@ DEFAULT_USER_AGENT = (
 DEFAULT_VIEWPORT = {"width": 1366, "height": 768}
 DEFAULT_LOCALE = "en-US"
 DEFAULT_TIMEZONE = "America/New_York"
-
-# Shared Stealth instance — playwright-stealth applies a bundle of
-# evasion scripts (navigator.webdriver removal, plugin spoofing, etc.)
-STEALTH = Stealth()
 
 
 def context_options(
@@ -49,10 +40,7 @@ def context_options(
 
 async def apply_stealth(context: BrowserContext) -> BrowserContext:
     """
-    Apply playwright-stealth evasion scripts to an existing browser context.
-
-    Every new page opened in this context will have the stealth patches
-    injected before any site script runs.
+    Legacy stub: Camoufox now handles stealth natively at the C++ level.
+    Returns the context unmodified.
     """
-    await STEALTH.apply_stealth_async(context)
     return context
