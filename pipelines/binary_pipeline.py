@@ -23,10 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from groq import Groq
-from typing import Any
-from browser.navigator import PlaywrightPageShim as Page
-Request = Any
-Response = Any
+from playwright.async_api import Page, Request, Response
 
 import config
 from transfer.aria2_manager import Aria2Manager, DownloadResult
@@ -288,7 +285,7 @@ async def run(
     logger.info("Resolved download: %s  method=%s", resolved.url, resolved.method)
     
     # Automatically kill the browser to free up resources before the aria2c loop
-    page.browser.stop()
+    await page.context.close()
 
     # 4. Hand off to aria2c
     own_manager = aria2_manager is None

@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass, field
 
 import trafilatura
-from browser.navigator import PlaywrightPageShim as Page
+from playwright.async_api import Page  # Restored native Playwright import!
 
 from rag.chunker import Chunk, chunk_text
 from rag.chroma_store import ChromaStore, QueryResult
@@ -179,5 +179,3 @@ def search(
     s = store or ChromaStore()
     results = s.query(query_text, n_results=n_results, source_url=source_url)
     return results
-
-
