@@ -59,6 +59,11 @@ _DOM_SNAPSHOT_JS = """
     for (const el of els) {
         const r = el.getBoundingClientRect();
         if (r.width === 0 && r.height === 0) continue;   // invisible
+        
+        // ANTI-DISTRACTION SHIELD: Hide Cloudflare links from the LLM so it doesn't click them!
+        const hrefStr = el.href ? el.href.toString() : '';
+        if (hrefStr.includes('cloudflare.com')) continue;
+
         out.push({
             tag:  el.tagName.toLowerCase(),
             id:   el.id   || null,
@@ -66,7 +71,7 @@ _DOM_SNAPSHOT_JS = """
             cls:  (el.className || '').toString().trim().slice(0, 35),
             text: (el.innerText || el.value || el.placeholder || '').trim().slice(0, 35),
             type: el.type  || null,
-            href: el.href ? el.href.toString().slice(0, 60) : null,
+            href: hrefStr.slice(0, 60) || null,
         });
         if (out.length >= 20) break;   
     }
@@ -171,11 +176,11 @@ async def _execute_action(page: Page, action: Action) -> bool:
             else:
                 await page.keyboard.press(key)
         elif action.action == "wait":
-            await page.wait_for_timeout(STEP_SETTLE_MS)
+            await asyncio.sleep(STEP_SETTLE_MS / 1000.0) # NATIVE PYTHON SLEEP
         elif action.action in ("done", "fail"):
             return True
 
-        await page.wait_for_timeout(STEP_SETTLE_MS)
+        await asyncio.sleep(STEP_SETTLE_MS / 1000.0) # NATIVE PYTHON SLEEP
         return True
 
     except asyncio.TimeoutError:
@@ -214,15 +219,27 @@ async def handle_obstacles(
     for round_num in range(1, max_rounds + 1):
         logger.info("Obstacle handler round %d/%d — %s", round_num, max_rounds, page.url)
 
-        # --- TURNSTILE AUTO-SNIPER ---
+        # --- TURNSTILE AUTO-SNIPER & SPINNER ---
         try:
             logger.info("Scanning for enterprise security gates...")
-            # Native Playwright locator for the Cloudflare iframe
+            
+            # 1. Check for passive spinner ("Just a moment...")
+            title = await page.title()
+            if "Just a moment" in title:
+                logger.warning("Turnstile spinner detected. Holding position...")
+                for _ in range(15):  # Wait up to 30s
+                    await asyncio.sleep(2.0)
+                    if "Just a moment" not in await page.title():
+                        logger.info("Turnstile cleared natively!")
+                        break
+                continue # Re-evaluate page now that spinner is gone
+
+            # 2. Check for active checkbox
             cf_box = page.locator('iframe[src*="cloudflare"]')
             if await cf_box.count() > 0 and await cf_box.first.is_visible():
                 logger.warning("Turnstile Auto-Sniper engaged! Clicking checkbox directly...")
                 await asyncio.wait_for(cf_box.first.click(), timeout=2.0)
-                await page.wait_for_timeout(6000)
+                await asyncio.sleep(6.0) # NATIVE PYTHON SLEEP
                 continue # Page cleared, skip the LLM and loop again
         except Exception:
             pass # No Turnstile found, proceed to normal LLM flow
@@ -268,7 +285,7 @@ async def handle_obstacles(
                 break
             await _execute_action(page, action)
 
-        await page.wait_for_timeout(POST_ACTION_SETTLE)
+        await asyncio.sleep(POST_ACTION_SETTLE / 1000.0) # NATIVE PYTHON SLEEP
 
     logger.warning("Obstacle handler hit max rounds (%d) without clearing", max_rounds)
     return ObstacleResult(cleared=False, final_url=page.url, final_html="", actions_taken=all_actions, error="Max rounds reached")

@@ -35,16 +35,35 @@ class Navigator:
         self._camoufox_context = AsyncCamoufox(headless=self.headless)
         self.browser = await self._camoufox_context.__aenter__()
         
-        # Camoufox returns a native Playwright Browser (or Context) object
+        # Camoufox returns a native Playwright Browser object
         self.page = await self.browser.new_page()
+
+        # --- THE FIREWALL ---
+        # Intercept and destroy poisoned Turnstile errors before Playwright's Node.js driver reads them and crashes!
+        await self.page.add_init_script("""
+            window.addEventListener('error', event => {
+                if (!event.error || typeof event.error === 'string' || !event.error.stack) {
+                    event.stopImmediatePropagation();
+                    event.preventDefault();
+                }
+            }, true);
+        """)
+
         return self
 
     async def close(self) -> None:
-        """Close the browser."""
-        if self.page:
-            await self.page.close()
-        if self._camoufox_context:
-            await self._camoufox_context.__aexit__(None, None, None)
+        """Close the browser safely, absorbing upstream driver crashes."""
+        try:
+            if self.page and not self.page.is_closed():
+                await self.page.close()
+        except Exception as e:
+            logger.debug("Absorbed page close error: %s", e)
+            
+        try:
+            if self._camoufox_context:
+                await self._camoufox_context.__aexit__(None, None, None)
+        except Exception as e:
+            logger.debug("Absorbed context close error: %s", e)
 
     async def __aenter__(self) -> "Navigator":
         return await self.start()
@@ -57,7 +76,7 @@ class Navigator:
     async def goto(
         self,
         url: str,
-        wait_until: str = "domcontentloaded",
+        wait_until: str = "load",  # Force full network load to avoid Turnstile race conditions
         extra_settle_ms: int = 8000,
     ) -> None:
         if not self.page:
@@ -65,29 +84,43 @@ class Navigator:
 
         logger.info("Navigating to %s", url)
         
-        # Look at that... pure, native Playwright navigation!
-        await self.page.goto(url, wait_until=wait_until)
-
-        if extra_settle_ms:
-            await self.page.wait_for_timeout(extra_settle_ms)
+        try:
+            await self.page.goto(url, wait_until=wait_until)
+            if extra_settle_ms:
+                await self.page.wait_for_timeout(extra_settle_ms)
+        except Exception as e:
+            # Cloudflare intentionally throws malformed JS to crash headless drivers.
+            # We catch it here so the pipeline continues with whatever HTML it successfully rendered.
+            logger.warning("Navigation interrupted (anti-bot defense absorbed).")
 
     # --- Content extraction --------------------------------------------
 
     async def get_html(self) -> str:
-        if not self.page:
-            raise RuntimeError("Navigator not started")
-        return await self.page.content()
+        if not self.page or self.page.is_closed():
+            return ""
+        try:
+            return await self.page.content()
+        except Exception:
+            return ""
 
     async def get_cookies(self) -> list[dict]:
-        if not self.page:
-            raise RuntimeError("Navigator not started")
-        return await self.page.context.cookies()
+        if not self.page or self.page.is_closed():
+            return []
+        try:
+            return await self.page.context.cookies()
+        except Exception:
+            return []
 
     async def screenshot(self, path: str, full_page: bool = True) -> None:
-        if not self.page:
-            raise RuntimeError("Navigator not started")
-        await self.page.screenshot(path=path, full_page=full_page)
+        if not self.page or self.page.is_closed():
+            return
+        try:
+            await self.page.screenshot(path=path, full_page=full_page)
+        except Exception as e:
+            logger.debug("Screenshot failed: %s", e)
 
     @property
     def current_url(self) -> str | None:
-        return self.page.url if self.page else None
+        if not self.page or self.page.is_closed():
+            return None
+        return self.page.url

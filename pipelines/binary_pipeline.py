@@ -13,7 +13,7 @@ Flow:
   6. Stream progress back to the caller via Aria2Manager.watch().
 
 The binary data NEVER passes through Python memory — only the URL and
-auth material do
+auth material do.
 """
 
 import asyncio
@@ -53,7 +53,7 @@ BINARY_EXTENSIONS = {
 class ResolvedDownload:
     url: str
     cookies: list[dict]
-    headers: dict                 # extra headers (Referer, etc.)
+    headers: dict                 # extra headers (Referer, User-Agent, etc.)
     filename_hint: str | None
     method: str                   # "direct" | "intercept" | "llm_trigger"
 
@@ -79,12 +79,9 @@ click_trigger, else null",
 }
 
 Strategies:
-- "direct_url": the URL itself (or a link visible in the DOM) is the \
-  direct download link — no clicking needed.
-- "click_trigger": a button/link must be clicked to initiate or reveal \
-  the real download URL.
-- "already_downloading": the page has already started the download \
-  (e.g. browser auto-download triggered).
+- "click_trigger": A button or link must be clicked to reveal or initiate the real download URL. THIS IS THE MOST COMMON STRATEGY for file hosting sites. Look for buttons like 'Download', 'Get Link', etc.
+- "direct_url": The URL itself is the direct binary link. WARNING: The CURRENT URL is almost NEVER the direct link, even if it ends in '/file'. DO NOT use this strategy for the current URL unless it ends in a literal file extension (like .zip, .rar).
+- "already_downloading": the page has already started the download.
 """
 
 _DOM_SNAPSHOT_JS = """
@@ -100,11 +97,15 @@ _DOM_SNAPSHOT_JS = """
         const r = el.getBoundingClientRect();
         if (r.width === 0 && r.height === 0) continue;
         
+        // ANTI-DISTRACTION SHIELD: Hide Cloudflare links from the LLM!
+        const hrefStr = el.href ? el.href.toString() : '';
+        if (hrefStr.includes('cloudflare.com')) continue;
+        
         out.push({
             tag: el.tagName.toLowerCase(),
             text: (el.innerText || '').trim().slice(0, 40),
-            // INCREASED TO 500 CHARS to support AkiraBox's massive crypto-tokens!
-            href: el.href ? el.href.toString().slice(0, 500) : null, 
+            // INCREASED TO 500 CHARS to support massive crypto-tokens!
+            href: hrefStr.slice(0, 500) || null, 
         });
         
         // Increased cutoff to 40 since we filtered out the junk
@@ -121,8 +122,20 @@ async def _identify_trigger(
     client: Groq,
 ) -> dict:
     """Ask the LLM how to get the download URL from the current page."""
-    elements = await page.evaluate(_DOM_SNAPSHOT_JS)
-    dom_json = json.dumps(elements, indent=2)
+    
+    # SHIELD: Catch dropped connections before they crash the pipeline
+    try:
+        elements = await page.evaluate(_DOM_SNAPSHOT_JS)
+        dom_json = json.dumps(elements, indent=2)
+    except Exception as e:
+        logger.warning("DOM snapshot failed (browser connection likely killed by anti-bot): %s", e)
+        return {
+            "strategy": "direct_url",
+            "url": page.url,
+            "selector": None,
+            "filename_hint": None,
+            "reason": f"Fallback due to dead browser connection",
+        }
 
     user_content = (
         f"GOAL: {goal}\n\n"
@@ -181,8 +194,8 @@ async def _resolve_via_intercept(
         ):
             resolved_url.append(url)
 
-    page.on("request", _on_request)
     try:
+        page.on("request", _on_request)
         await page.wait_for_selector(selector, timeout=10000)
         await page.click(selector, timeout=6000)
         deadline = asyncio.get_event_loop().time() + INTERCEPT_TIMEOUT_MS / 1000
@@ -191,7 +204,10 @@ async def _resolve_via_intercept(
     except Exception as e:
         logger.warning("Click on %r failed: %s", selector, e)
     finally:
-        page.remove_listener("request", _on_request)
+        try:
+            page.remove_listener("request", _on_request)
+        except Exception:
+            pass # Ignore cleanup errors if browser is dead
 
     return resolved_url[0] if resolved_url else None
 
@@ -210,17 +226,6 @@ async def run(
 ) -> DownloadResult:
     """
     Run the full binary pipeline for an obstacle-cleared page.
-
-    Args:
-        page:          Active Playwright Page, already past any login/gates.
-        goal:          Natural-language description of what we're downloading.
-        filename_hint: Optional expected filename (from intent parser).
-        dest_dir:      Where to save the file (defaults to config.DOWNLOAD_DIR).
-        groq_client:   Optional pre-built Groq client.
-        aria2_manager: Optional pre-built Aria2Manager (must already be started).
-
-    Returns:
-        DownloadResult with .success, .filepath, and optional .error.
     """
     client = groq_client or Groq(api_key=config.GROQ_API_KEY)
     dest_dir = Path(dest_dir or config.DOWNLOAD_DIR)
@@ -254,8 +259,6 @@ async def run(
             method = "llm_trigger"
 
     elif strategy == "already_downloading":
-        # Nothing more to do — the browser already triggered it.
-        # We can't hand this to aria2c cleanly; report as a limitation.
         logger.warning("Page is already downloading — cannot intercept for aria2c handoff")
         return DownloadResult(
             success=False,
@@ -271,9 +274,18 @@ async def run(
             error=f"Could not resolve a download URL (strategy={strategy})",
         )
 
-    # 3. Extract session cookies + basic headers
-    cookies = await page.context.cookies()
-    headers = {"Referer": page.url}
+    # 3. Extract session cookies AND User-Agent fingerprint to prevent 403 Forbidden!
+    try:
+        cookies = await page.context.cookies()
+        user_agent = await page.evaluate("navigator.userAgent")
+    except Exception:
+        cookies = []
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    
+    headers = {
+        "Referer": page.url,
+        "User-Agent": user_agent
+    }
 
     resolved = ResolvedDownload(
         url=download_url,
@@ -285,7 +297,10 @@ async def run(
     logger.info("Resolved download: %s  method=%s", resolved.url, resolved.method)
     
     # Automatically kill the browser to free up resources before the aria2c loop
-    await page.context.close()
+    try:
+        await page.context.close()
+    except Exception:
+        pass
 
     # 4. Hand off to aria2c
     own_manager = aria2_manager is None
