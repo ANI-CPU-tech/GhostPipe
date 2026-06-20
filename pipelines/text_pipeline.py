@@ -11,7 +11,7 @@ Flow:
   6. Return an IngestResult summarising what was stored.
 
 After this pipeline completes, the caller can immediately run semantic
-search over the ingested content via ChromaStore.query().
+search over the ingested content via ChromaStore.query()
 """
 
 import logging

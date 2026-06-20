@@ -13,7 +13,7 @@ Flow:
   6. Stream progress back to the caller via Aria2Manager.watch().
 
 The binary data NEVER passes through Python memory — only the URL and
-auth material do.
+auth material do
 """
 
 import asyncio
